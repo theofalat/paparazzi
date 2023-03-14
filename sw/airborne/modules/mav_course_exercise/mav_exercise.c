@@ -19,7 +19,8 @@
  */
 
 #include "mav_exercise.h"
-#include "modules/core/abi.h"
+#inc
+#incl
 #include "firmwares/rotorcraft/navigation.h"
 #include "state.h"
 #include "autopilot_static.h"
@@ -33,6 +34,10 @@
 uint8_t increase_nav_heading(float incrementDegrees);
 uint8_t moveWaypointForward(uint8_t waypoint, float distanceMeters);
 uint8_t moveWaypoint(uint8_t waypoint, struct EnuCoor_i *new_coor);
+
+// SECOND ADDITION, BASED ON ORANGE_AVOIDER.C PLACEMENT
+
+static uint8_t chooseRandomIncrementAvoidance(void);
 
 enum navigation_state_t {
   SAFE,
@@ -65,6 +70,11 @@ static void color_detection_cb(uint8_t __attribute__((unused)) sender_id,
 }
 
 void mav_exercise_init(void) {
+  
+  // Initialise random values
+  srand(time(NULL));
+  chooseRandomIncrementAvoidance();
+  
   // bind our colorfilter callbacks to receive the color filter outputs
   AbiBindMsgVISUAL_DETECTION(ORANGE_AVOIDER_VISUAL_DETECTION_ID, &color_detection_ev, color_detection_cb);
 }
@@ -107,6 +117,11 @@ void mav_exercise_periodic(void) {
       // stop as soon as obstacle is found
       waypoint_move_here_2d(WP_GOAL);
       waypoint_move_here_2d(WP_TRAJECTORY);
+
+      // randomly select new search direction
+      // CODE ADDED BY ME
+
+      chooseRandomIncrementAvoidance();
 
       navigation_state = HOLD;
       break;
@@ -172,5 +187,20 @@ uint8_t moveWaypointForward(uint8_t waypoint, float distanceMeters) {
   struct EnuCoor_i new_coor;
   calculateForwards(&new_coor, distanceMeters);
   moveWaypoint(waypoint, &new_coor);
+  return false;
+}
+
+// HERE IS THE NEW CODE I ADDED 
+
+uint8_t chooseRandomIncrementAvoidance(void)
+{
+  // Randomly choose CW or CCW avoiding direction
+  if (rand() % 2 == 0) {
+    heading_increment = 20.f;
+    VERBOSE_PRINT("Set avoidance increment to: %f\n", heading_increment);
+  } else {
+    heading_increment = -20.f;
+    VERBOSE_PRINT("Set avoidance increment to: %f\n", heading_increment);
+  }
   return false;
 }
