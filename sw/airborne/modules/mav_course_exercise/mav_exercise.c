@@ -19,188 +19,290 @@
  */
 
 #include "mav_exercise.h"
-#inc
-#incl
+#include "firmwares/rotorcraft/guidance/guidance_h.h"
+#include "subsystems/abi.h"
 #include "firmwares/rotorcraft/navigation.h"
 #include "state.h"
 #include "autopilot_static.h"
+#include "firmwares/rotorcraft/autopilot_guided.h"
+#include "autopilot.h"
+#include "firmwares/rotorcraft/guidance.h"
 #include <stdio.h>
+#include <time.h>
 
 #define NAV_C // needed to get the nav functions like Inside...
 #include "generated/flight_plan.h"
 
 #define PRINT(string, ...) fprintf(stderr, "[mav_exercise->%s()] " string,__FUNCTION__ , ##__VA_ARGS__)
 
-uint8_t increase_nav_heading(float incrementDegrees);
-uint8_t moveWaypointForward(uint8_t waypoint, float distanceMeters);
-uint8_t moveWaypoint(uint8_t waypoint, struct EnuCoor_i *new_coor);
+// Proportional gain for the yaw rate control
+# ifndef KPI
+# define KPI 0.0025
+# endif
 
-// SECOND ADDITION, BASED ON ORANGE_AVOIDER.C PLACEMENT
+// Derivative gain for the yaw rate control
+# ifndef KDI
+# define KDI 0.000001
+# endif
 
-static uint8_t chooseRandomIncrementAvoidance(void);
+// 'Damping' gain (unused)
+# ifndef KYD
+# define KYD 1000
+# endif
 
+// Yaw rate magnitude limit
+# ifndef YI
+# define YI 1.1
+# endif
+
+// Nominal velocity command mangitude
+# ifndef VI
+# define VI 0.4
+# endif
+
+// (unused)
+# ifndef DIVI
+# define DIVI 0.0001f
+# endif
+
+// Optical flow difference threshold
+# ifndef OFDI
+# define OFDI 350
+# endif
+
+// Threshold for the 'green count' of the floor
+# ifndef GRDI
+# define GRDI 1000
+# endif
+
+// Divergence threshold (unused)
+# ifndef DVDI
+# define DVDI 2000
+# endif
+
+// How many times divergence has to be above threshold to trigger obstacle avoidace (unused)
+# ifndef RBST
+# define RBST 6
+# endif
+
+// States for our state machine
 enum navigation_state_t {
   SAFE,
-  OBSTACLE_FOUND,
   OUT_OF_BOUNDS,
-  HOLD
+  REENTER_ARENA,
+  GOBACK,
+  TURN
 };
 
-// define and initialise global variables
-float oa_color_count_frac = 0.18f;
-enum navigation_state_t navigation_state = SAFE;
-int32_t color_count = 0;               // orange color count from color filter for obstacle detection
-int16_t obstacle_free_confidence = 0;   // a measure of how certain we are that the way ahead is safe.
-float moveDistance = 2;                 // waypoint displacement [m]
-float oob_haeding_increment = 5.f;      // heading angle increment if out of bounds [deg]
-const int16_t max_trajectory_confidence = 5; // number of consecutive negative object detections to be sure we are obstacle free
+// Define and initialise global variables
+enum navigation_state_t navigation_state = SAFE; // Start in safe state
+int32_t floor_count = 0;                // green color count from color filter for floor detection
+int32_t floor_centroid = 0;             // floor detector centroid in y direction (along the horizon)
 
+float div_thresh = 0.f;                 // From original file
+float heading_increment = 0.f;
 
-// needed to receive output from a separate module running on a parallel process
-#ifndef ORANGE_AVOIDER_VISUAL_DETECTION_ID
-#define ORANGE_AVOIDER_VISUAL_DETECTION_ID ABI_BROADCAST
+float div_1 = 0.f;                      // Divergence
+float divergence_thresh = DVDI;         // Divergence threshold
+double Kp = KPI;                        // Proportional gain for yaw rate control
+double Kd = KDI;                        // Derivative gain
+double Kyd = KYD;                       // 'Damping' gain
+float yaw_rate = 0;                     // yaw rate that we will set
+float green_thresh = GRDI;              // Threshold for the count of green pixels on the floor
+float of_diff_thresh = OFDI;            // Trheshold for the OF difference
+double of_diff;                          // difference in optical flow between right and left side
+double of_diff_prev = 0;                // OF difference in previous loop
+float yaw_thresh = YI;                  // Threshold (limit) for the commnaded yaw rate
+float dr_vel = VI;                      // Forward velocity to be commanded
+int count_backwards=0;                  // Counter for the GOBACK state
+int count_oob=0;                        // Counter for OOB state
+int robust = RBST;                      // Threshold for counter below for the divergence
+int count_robust = 0;                 // Counter to keep track of divergence exceeding set threshold
+
+// For our OF diff message
+#ifndef OF_DIFF_DIV_ID
+#define OF_DIFF_DIV_ID ABI_BROADCAST
 #endif
-static abi_event color_detection_ev;
-static void color_detection_cb(uint8_t __attribute__((unused)) sender_id,
-                               int16_t __attribute__((unused)) pixel_x, int16_t __attribute__((unused)) pixel_y,
-                               int16_t __attribute__((unused)) pixel_width,
-                               int16_t __attribute__((unused)) pixel_height,
-                               int32_t quality, int16_t __attribute__((unused)) extra) {
-  color_count = quality;
+
+// For floor count message
+#ifndef FLOOR_VISUAL_DETECTION_ID
+#define FLOOR_VISUAL_DETECTION_ID ABI_BROADCAST
+#endif
+
+// Event and callback for floor green pixel count message
+static abi_event floor_detection_ev;
+static void floor_detection_cb(uint8_t __attribute__((unused)) sender_id,
+                               int16_t __attribute__((unused)) pixel_x, int16_t pixel_y,
+                               int16_t __attribute__((unused)) pixel_width, int16_t __attribute__((unused)) pixel_height,
+                               int32_t quality, int16_t __attribute__((un45used)) extra)
+{
+  floor_count = quality;
+  floor_centroid = pixel_y;
 }
 
+// Event and callback for OF diff and div message
+static abi_event optical_flow_ev;
+static void optical_flow_cb(uint8_t __attribute__((unused)) sender_id, double of_diff_value, float div_value) {
+  div_1 = div_value;
+  of_diff = of_diff_value;
+}
+
+
 void mav_exercise_init(void) {
-  
-  // Initialise random values
-  srand(time(NULL));
-  chooseRandomIncrementAvoidance();
-  
-  // bind our colorfilter callbacks to receive the color filter outputs
-  AbiBindMsgVISUAL_DETECTION(ORANGE_AVOIDER_VISUAL_DETECTION_ID, &color_detection_ev, color_detection_cb);
+  // bind callbacks
+  AbiBindMsgOF_DIFF_DIV(OF_DIFF_DIV_ID, &optical_flow_ev, optical_flow_cb);
+  AbiBindMsgVISUAL_DETECTION(FLOOR_VISUAL_DETECTION_ID, &floor_detection_ev, floor_detection_cb);
 }
 
 void mav_exercise_periodic(void) {
-  // only evaluate our state machine if we are flying
-  if (!autopilot_in_flight()) {
+  // Only evaluate our state machine if we are flying (in guided mode)
+
+  if (guidance_h.mode != GUIDANCE_H_MODE_GUIDED) {
+    navigation_state = SAFE;
     return;
   }
 
-  // compute current color thresholds
-  // front_camera defined in airframe xml, with the video_capture module
-  int32_t color_count_threshold = oa_color_count_frac * front_camera.output_size.w * front_camera.output_size.h;
-
-  PRINT("Color_count: %d  threshold: %d state: %d \n", color_count, color_count_threshold, navigation_state);
-
-  // update our safe confidence using color threshold
-  if (color_count < color_count_threshold) {
-    obstacle_free_confidence++;
-  } else {
-    obstacle_free_confidence -= 2;  // be more cautious with positive obstacle detections
-  }
-
-  // bound obstacle_free_confidence
-  Bound(obstacle_free_confidence, 0, max_trajectory_confidence);
+  // Printing of useful numbers
+  PRINT("OF difference: %f \n", of_diff);
+  PRINT("OF difference prev: %f \n", of_diff_prev);
+  PRINT("Yaw rate: %f \n", stateGetBodyRates_f()->r);
+  PRINT("Divergence value is: %f \n",div_1);
+  PRINT("Green count value is: %d \n",floor_count);
 
   switch (navigation_state) {
+    // Safe state, when there is no need to avoid anything
     case SAFE:
-      moveWaypointForward(WP_TRAJECTORY, 1.5f * moveDistance);
-      if (!InsideObstacleZone(WaypointX(WP_TRAJECTORY), WaypointY(WP_TRAJECTORY))) {
+      PRINT("SAFE STATE \n");
+      // First check, if not inside, set state to OOB
+      if (!InsideObstacleZone(stateGetPositionEnu_f()->x , stateGetPositionEnu_f()->y ))
+      {
         navigation_state = OUT_OF_BOUNDS;
-      } else if (obstacle_free_confidence == 0) {
-        navigation_state = OBSTACLE_FOUND;
-      } else {
-        moveWaypointForward(WP_GOAL, moveDistance);
       }
+      // If divergence is above threshold several times, set state to GOBACK
+      else if(div_1 > divergence_thresh)
+      {
+        count_robust++;
+        if(count_robust >= robust)
+        {
+          navigation_state = GOBACK;
+        }
+      }
+      // Also check green pixel count on floor, if below threshold, also set state to GOBACK
+      else if(floor_count < green_thresh)
+      {
+    	  navigation_state = GOBACK;
+      }
+      // Otherwise if optical flow difference is above threshold, switch to turning state
+      else if(fabs(of_diff)>of_diff_thresh)
+      {
+          count_robust = 0;
+          navigation_state = TURN;
+      }
+      // Otherwise just keep going forward
+      else
+      {
+          count_robust = 0;
+          PRINT("NO ROTATION \n");
+          guidance_h_set_guided_body_vel(dr_vel, 0);
+          guidance_h_set_guided_heading_rate(0);
+      }
+
       break;
-    case OBSTACLE_FOUND:
-      // TODO Change behavior
-      // stop as soon as obstacle is found
-      waypoint_move_here_2d(WP_GOAL);
-      waypoint_move_here_2d(WP_TRAJECTORY);
-
-      // randomly select new search direction
-      // CODE ADDED BY ME
-
-      chooseRandomIncrementAvoidance();
-
-      navigation_state = HOLD;
-      break;
-    case OUT_OF_BOUNDS:
-      // stop
-      waypoint_move_here_2d(WP_GOAL);
-      waypoint_move_here_2d(WP_TRAJECTORY);
-
-      increase_nav_heading(oob_haeding_increment);
-      moveWaypointForward(WP_TRAJECTORY, 1.5f);
-
-      if (InsideObstacleZone(WaypointX(WP_TRAJECTORY), WaypointY(WP_TRAJECTORY))) {
-        // add offset to head back into arena
-        increase_nav_heading(oob_haeding_increment);
+    // Turn state, when turning is necessary to avoid obstacles
+    case TURN:
+      PRINT("TURN STATE \n");
+      // OOB check again first
+      if (!InsideObstacleZone(stateGetPositionEnu_f()->x , stateGetPositionEnu_f()->y ))
+      {
+        navigation_state = OUT_OF_BOUNDS;
+      }
+      // If optical flow difference is below threshold, go back to safe state
+      if(fabs(of_diff)-fabs(Kyd * stateGetBodyRates_f()->r) < of_diff_thresh)
+      {
         navigation_state = SAFE;
       }
+      // Same check as before for green pixel count on floor
+      else if(floor_count < green_thresh)
+      {
+    	  navigation_state = GOBACK;
+      }
+      // Setting yaw rate to gain * optical flow difference, clipping at maximum and minimum yaw values
+      yaw_rate =  -Kp * of_diff + Kd * (of_diff - of_diff_prev);
+      if(yaw_rate > yaw_thresh){yaw_rate = yaw_thresh;}
+      else if(yaw_rate < -yaw_thresh){yaw_rate = -yaw_thresh;}
+      guidance_h_set_guided_heading_rate(yaw_rate);
+      guidance_h_set_guided_body_vel(dr_vel, 0);
       break;
-    case HOLD:
+
+    case GOBACK:
+      PRINT("GOBACK STATE \n");
+      if (!InsideObstacleZone(stateGetPositionEnu_f()->x , stateGetPositionEnu_f()->y )) {
+          navigation_state = OUT_OF_BOUNDS;
+        }
+      // Go backwards for two counts
+      else if(count_backwards<=4)
+      {
+          guidance_h_set_guided_body_vel(-0.1, 0);
+          guidance_h_set_guided_heading_rate(0);
+          count_backwards++;
+          PRINT("GO BACK \n");
+      }
+      // Then switch to OOB state, reset counter
+      else
+      {
+        navigation_state = OUT_OF_BOUNDS;
+        count_backwards=0;
+      }
+      break;
+
+    case OUT_OF_BOUNDS:
+      PRINT("OOB STATE \n");
+      // Always stopping
+      guidance_h_set_guided_body_vel(0, 0);
+      // On 'first' loop, reverse a bit and set target heading to current + 160 deg
+      if(count_oob == 0)
+      {
+          guidance_h_set_guided_body_vel(-dr_vel, 0);
+      	  guidance_h_set_guided_heading(stateGetNedToBodyEulers_f()->psi + RadOfDeg(160));
+      }
+      // Essentially a counter to make it wait so that it doesn't immediately go to next state
+      if(count_oob > 6)
+      {
+    	  navigation_state = REENTER_ARENA;
+    	  count_oob=0;
+      }
+      else
+      {
+    	  // Increase counter
+    	  count_oob++;
+      }
+      break;
+
+    case REENTER_ARENA:
+      PRINT("REENTER STATE \n");
+      // Keep going until back inside, then switch back to safe state
+
+    	  guidance_h_set_guided_body_vel(dr_vel, 0);
+          // If green count very low, likely facing wrong direction even after OOB turn, so turn a bit more
+    	  if (floor_count < green_thresh)
+    	  {
+          	  guidance_h_set_guided_heading(stateGetNedToBodyEulers_f()->psi + RadOfDeg(60));
+    	  }
+    	  // Once inside again, go back to safe state
+    	  else if(InsideObstacleZone(stateGetPositionEnu_f()->x , stateGetPositionEnu_f()->y ))
+    	  {
+    		  navigation_state = SAFE;
+    	  }
+
+      break;
+
     default:
       break;
+
+
+
   }
-}
-
-/*
- * Increases the NAV heading. Assumes heading is an INT32_ANGLE. It is bound in this function.
- */
-uint8_t increase_nav_heading(float incrementDegrees) {
-  float new_heading = stateGetNedToBodyEulers_f()->psi + RadOfDeg(incrementDegrees);
-
-  // normalize heading to [-pi, pi]
-  FLOAT_ANGLE_NORMALIZE(new_heading);
-
-  // set heading
-  nav_heading = ANGLE_BFP_OF_REAL(new_heading);
-
-  return false;
-}
-
-/*
- * Calculates coordinates of a distance of 'distanceMeters' forward w.r.t. current position and heading
- */
-static uint8_t calculateForwards(struct EnuCoor_i *new_coor, float distanceMeters) {
-  float heading = stateGetNedToBodyEulers_f()->psi;
-
-  // Now determine where to place the waypoint you want to go to
-  new_coor->x = stateGetPositionEnu_i()->x + POS_BFP_OF_REAL(sinf(heading) * (distanceMeters));
-  new_coor->y = stateGetPositionEnu_i()->y + POS_BFP_OF_REAL(cosf(heading) * (distanceMeters));
-  return false;
-}
-
-/*
- * Sets waypoint 'waypoint' to the coordinates of 'new_coor'
- */
-uint8_t moveWaypoint(uint8_t waypoint, struct EnuCoor_i *new_coor) {
-  waypoint_move_xy_i(waypoint, new_coor->x, new_coor->y);
-  return false;
-}
-
-/*
- * Calculates coordinates of distance forward and sets waypoint 'waypoint' to those coordinates
- */
-uint8_t moveWaypointForward(uint8_t waypoint, float distanceMeters) {
-  struct EnuCoor_i new_coor;
-  calculateForwards(&new_coor, distanceMeters);
-  moveWaypoint(waypoint, &new_coor);
-  return false;
-}
-
-// HERE IS THE NEW CODE I ADDED 
-
-uint8_t chooseRandomIncrementAvoidance(void)
-{
-  // Randomly choose CW or CCW avoiding direction
-  if (rand() % 2 == 0) {
-    heading_increment = 20.f;
-    VERBOSE_PRINT("Set avoidance increment to: %f\n", heading_increment);
-  } else {
-    heading_increment = -20.f;
-    VERBOSE_PRINT("Set avoidance increment to: %f\n", heading_increment);
-  }
-  return false;
+  // Update previous value of OF diff for next loop
+  of_diff_prev = of_diff;
+  return;
 }
