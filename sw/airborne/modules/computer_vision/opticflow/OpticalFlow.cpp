@@ -23,7 +23,7 @@ using namespace cv;
 using namespace std;
 
 
-struct opticflow* determine_flow(char *prev, char *curr, int height, int width){
+int determine_flow(char *prev, char *curr, int height, int width){
 
     //struct opticflow* flow = new struct opticflow;
 
