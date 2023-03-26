@@ -12,7 +12,7 @@
 
 
 #include <stdio.h>
-#include "image.h"
+#include "lib/vision/image.h"
 #include <stdlib.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc/types_c.h>
@@ -22,10 +22,10 @@
 using namespace cv;
 using namespace std;
 
+void determine_flow(char *prev, char *curr, int height, int width){
 
-int determine_flow(char *prev, char *curr, int height, int width){
-
-    //struct opticflow* flow = new struct opticflow;
+    //struct flow_t* flow = new struct flow_t;
+    vector<flow_t> lin_vectors;
 
     //Copy and scale the images to M1 and M2
     Mat M1(height, width, CV_8UC2, prev);
@@ -93,16 +93,20 @@ int determine_flow(char *prev, char *curr, int height, int width){
     vector<uchar> status;
     vector<float> error;
     calcOpticalFlowPyrLK(prev_bgr, bgr, points_old, points_new, status, error, winSize, maxLevel, criteria);
+    //flow->error = error;
 
     // filter the flow vector by their status
     vector<Point2f> good_points_old, good_points_new, flow_vectors;
+    vector<float> error_new;
     for (size_t i = 0; i < status.size(); i++) {
         if (status[i]) {
             good_points_old.push_back(points_old[i]);
             good_points_new.push_back(points_new[i]);
             flow_vectors.push_back(points_new[i] - points_old[i]);
+            error_new.push_back(error[i]);
         }
     }
+    
 
     // filter the flow vectors by their magnitude
     vector<float> magnitudes;
@@ -113,15 +117,35 @@ int determine_flow(char *prev, char *curr, int height, int width){
     // find the flow vectors that are above the threshold and save them
     float threshold = 0.9 * (*max_element(magnitudes.begin(), magnitudes.end()));
     vector<Point2f> good_flow_vectors;
+    vector<float> good_error;
     for (size_t i = 0; i < flow_vectors.size(); i++) {
         if (magnitudes[i] >= threshold) {
             good_flow_vectors.push_back(flow_vectors[i]);
             good_points_old.push_back(good_points_old[i]);
             good_points_new.push_back(good_points_new[i]);
+            lin_vectors[i].pos.x = points_old[i].x;
+            lin_vectors[i].pos.y = points_old[i].y;
+            lin_vectors[i].flow_x = flow_vectors[i].x;
+            lin_vectors[i].flow_y = flow_vectors[i].y;
+            lin_vectors[i].error = good_error[i];
+            lin_vectors[i].pos.count = 0;
+            lin_vectors[i].pos.x_sub = 0;
+            lin_vectors[i].pos.y_sub = 0;
         }
     }
     
-    return *flow_t;
+    // Declare an array of flow_t with the same size as lin_vectors
+    flow_t* flow_array = new flow_t[lin_vectors.size()];
 
+    // Loop through each element in lin_vectors and copy its data into the corresponding element in flow_array
+    for (size_t i = 0; i < lin_vectors.size(); i++) {
+        flow_array[i].pos = lin_vectors[i].pos;
+        flow_array[i].flow_x = lin_vectors[i].flow_x;
+        flow_array[i].flow_y = lin_vectors[i].flow_y;
+        flow_array[i].error = lin_vectors[i].error;
+    }
+
+    return flow_array;
 
 }
+
