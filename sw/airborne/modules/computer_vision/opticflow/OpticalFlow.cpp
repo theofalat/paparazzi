@@ -2,15 +2,6 @@
 // Created by SerbiBlaga on 24/03/2023.
 //
 
-//struct flow_t{
-// struct point_t pos;
-// int32_t        flow_x;
-// int32_t        flow_y;
-// uint32_t       error;   -- matching error in the tracking process in the subpixels
-// }
-
-
-
 #include <stdio.h>
 #include "lib/vision/image.h"
 #include <stdlib.h>
@@ -18,11 +9,12 @@
 #include <opencv2/imgproc/types_c.h>
 #include <opencv2/highgui/highgui_c.h>
 #include <opencv2/video/tracking.hpp>
+#include "linear_flow_fit.h"
 
 using namespace cv;
 using namespace std;
 
-void determine_flow(char *prev, char *curr, int height, int width){
+bool determine_flow(char *prev, char *curr, int height, int width, uint16_t winSize_i, uint16_t maxLevel, int OPTICFLOW_ERROR_THRESHOLD, int OPTICFLOW_N_ITERATIONS, int OPTICFLOW_N_SAMPLES, linear_flow_fit_info *info){
 
     //struct flow_t* flow = new struct flow_t;
     vector<flow_t> lin_vectors;
@@ -43,6 +35,8 @@ void determine_flow(char *prev, char *curr, int height, int width){
     crop_image.y = crop_width;
     crop_image.width = width - 2 * crop_image.x; //crop the image by removing twice the x-direction corners
     crop_image.height = height - 2 * crop_image.y; //crop the image by removing twice the y-direction corners
+    width = crop_image.width;
+    height = crop_image.height;
 
     //Convert to gray
     cvtColor(M1(crop_image), prev_bgr, CV_YUV2GRAY_Y422);
@@ -84,8 +78,14 @@ void determine_flow(char *prev, char *curr, int height, int width){
     }
 
     // Parameters for lucas kanade optical flow
-    Size winSize(15, 15);
-    int maxLevel = 2;
+    //Size winSize(15, 15);
+
+    uint16_t nr;
+    nr = winSize_i;
+
+    Size winSize(nr, nr);
+
+    //int maxLevel = 2;
     TermCriteria criteria(TermCriteria::COUNT | TermCriteria::EPS, 10, 0.03);
 
     // calculate optical flow
@@ -94,7 +94,7 @@ void determine_flow(char *prev, char *curr, int height, int width){
     vector<float> error;
     calcOpticalFlowPyrLK(prev_bgr, bgr, points_old, points_new, status, error, winSize, maxLevel, criteria);
     //flow->error = error;
-
+    
     // filter the flow vector by their status
     vector<Point2f> good_points_old, good_points_new, flow_vectors;
     vector<float> error_new;
@@ -139,13 +139,21 @@ void determine_flow(char *prev, char *curr, int height, int width){
 
     // Loop through each element in lin_vectors and copy its data into the corresponding element in flow_array
     for (size_t i = 0; i < lin_vectors.size(); i++) {
-        flow_array[i].pos = lin_vectors[i].pos;
-        flow_array[i].flow_x = lin_vectors[i].flow_x;
-        flow_array[i].flow_y = lin_vectors[i].flow_y;
-        flow_array[i].error = lin_vectors[i].error;
+            flow_array[i].pos = lin_vectors[i].pos;
+            flow_array[i].flow_x = lin_vectors[i].flow_x;
+            flow_array[i].flow_y = lin_vectors[i].flow_y;
+            flow_array[i].error = lin_vectors[i].error;
+            //flow_array[0].pos.count = i;
+
     }
 
-    return flow_array;
+    //return flow_array;
+
+    bool result_analyzer;
+
+    result_analyzer = analyze_linear_flow_field(flow_array, lin_vectors.size(), OPTICFLOW_ERROR_THRESHOLD, OPTICFLOW_N_ITERATIONS, OPTICFLOW_N_SAMPLES, width, height, info);
+    
+    return result_analyzer;
 
 }
 
