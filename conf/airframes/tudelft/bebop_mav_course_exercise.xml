@@ -17,6 +17,14 @@
       <define name="COLOR_OBJECT_DETECTOR_CB_MAX1" value="140"/>
       <define name="COLOR_OBJECT_DETECTOR_CR_MIN1" value="160"/>
       <define name="COLOR_OBJECT_DETECTOR_CR_MAX1" value="225"/>
+
+      <!-- Detect green -->
+      <define name="COLOR_OBJECT_DETECTOR_LUM_MIN2" value="75"/>
+      <define name="COLOR_OBJECT_DETECTOR_LUM_MAX2" value="93"/>
+      <define name="COLOR_OBJECT_DETECTOR_CB_MIN2" value="120"/>
+      <define name="COLOR_OBJECT_DETECTOR_CB_MAX2" value="131"/>
+      <define name="COLOR_OBJECT_DETECTOR_CR_MIN2" value="119"/>
+      <define name="COLOR_OBJECT_DETECTOR_CR_MAX2" value="133"/>
     </target>
     <target name="nps" board="pc">
       <module name="fdm" type="gazebo"/>
@@ -30,6 +38,14 @@
       <define name="COLOR_OBJECT_DETECTOR_CB_MAX1" value="121"/>
       <define name="COLOR_OBJECT_DETECTOR_CR_MIN1" value="134"/>
       <define name="COLOR_OBJECT_DETECTOR_CR_MAX1" value="249"/>
+
+      <!-- Detect green -->
+      <define name="COLOR_OBJECT_DETECTOR_LUM_MIN2" value="0"/>
+      <define name="COLOR_OBJECT_DETECTOR_LUM_MAX2" value="255"/>
+      <define name="COLOR_OBJECT_DETECTOR_CB_MIN2" value="0"/>
+      <define name="COLOR_OBJECT_DETECTOR_CB_MAX2" value="110"/>
+      <define name="COLOR_OBJECT_DETECTOR_CR_MIN2" value="0"/>
+      <define name="COLOR_OBJECT_DETECTOR_CR_MAX2" value="130"/>
     </target>
     
     <define name="ARRIVED_AT_WAYPOINT" value="0.5"/><!-- Detect arrival at waypoint when within 0.5m -->
@@ -54,10 +70,10 @@
 
     <!-- Video/Camera modules -->
     <module name="bebop_cam"/>
-    <!--module name="bebop_ae_awb">
+    <module name="bebop_ae_awb">
       <define name="CV_AE_AWB_AV" value="1" />
       <define name="CV_AE_AWB_VERBOSE" value="0" />
-    </module-->
+    </module>
     <module name="video_capture">
       <define name="VIDEO_CAPTURE_CAMERA" value="front_camera"/>
       <define name="VIDEO_CAPTURE_FPS" value="10"/>
@@ -66,7 +82,22 @@
       <define name="COLOR_OBJECT_DETECTOR_CAMERA1" value="front_camera"/>
       <define name="COLOR_OBJECT_DETECTOR_FPS1" value="0"/>
       <define name="COLOR_OBJECT_DETECTOR_DRAW1" value="1"/>
+
+      <define name="COLOR_OBJECT_DETECTOR_CAMERA2" value="front_camera"/>
+      <define name="COLOR_OBJECT_DETECTOR_FPS2" value="0"/>
+      <define name="COLOR_OBJECT_DETECTOR_DRAW2" value="1"/>
     </module>
+    <module name="cv_opticflow">
+      <define name="OPTICFLOW_CAMERA" value="front_camera"/> 
+      <define name="MAX_HORIZON" value="10"/> 
+      <define name="OPTICFLOW_MAX_TRACK_CORNERS" value="10"/> 
+      <define name="OPTICFLOW_SUBPIXEL_FACTOR" value="200"/> 
+      <define name="OPTICFLOW_CORNER_METHOD" value="0"/> 
+      <define name="OPTICFLOW_DEROTATION_CORRECTION_FACTOR_X" value="0.8"/> 
+      <define name="OPTICFLOW_DEROTATION_CORRECTION_FACTOR_Y" value="0.85"/>
+      <define name="OMAX_TRACK_CORNERS" value="10"/>    
+    </module>
+
     <module name="video_rtp_stream">
       <define name="VIEWVIDEO_CAMERA" value="front_camera"/>
       <define name="VIEWVIDEO_CAMERA2" value="bottom_camera"/>
